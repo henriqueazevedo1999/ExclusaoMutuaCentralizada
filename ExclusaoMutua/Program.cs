@@ -1,142 +1,107 @@
-using ExclusaoMutua;
+using System.Collections.Concurrent;
+
+namespace ExclusaoMutua;
 
 public static class Program
 {
-    private static int ADICIONA = 4000;
-    private static int INATIVO_PROCESSO = 8000;
-    private static int INATIVO_COORDENADOR = 30000;
-    private static int CONSOME_RECURSO_MIN = 5000;
-    private static int CONSOME_RECURSO_MAX = 10000;
+    //tempos ajustados para testes. falta ajustar de acordo com o trabalho
+    private const double TEMPO_BASE = 0.3;
+    private const int ADICIONA = (int)(15000 * TEMPO_BASE);
+    private const int INATIVO_COORDENADOR = (int)(30000 * TEMPO_BASE);
+    private const int CONSOME_RECURSO_MIN = (int)(5000 * TEMPO_BASE);
+    private const int CONSOME_RECURSO_MAX = (int)(15000 * TEMPO_BASE);
 
-    private static object _lock = new object();
+    private static Processo _coordenador;
+    private static ConcurrentDictionary<int, Processo> processosAtivos = new();
 
-    public static void Main(string[] args)
+    public static void Main()
     {
-        CriarProcessos(ControladorDeProcessos.ProcessosAtivos);
-        InativarCoordenador(ControladorDeProcessos.ProcessosAtivos);
-        InativarProcesso(ControladorDeProcessos.ProcessosAtivos);
-        AcessarRecurso(ControladorDeProcessos.ProcessosAtivos);
+        CriarProcessos();
+        InativarCoordenador();
+        AcessarRecurso();
     }
 
-
-    public static void CriarProcessos(List<Processo> processosAtivos)
+    public static void CriarProcessos()
     {
         new Thread(() =>
         {
             while (true)
             {
-                lock (_lock)
+                int pid = 0;
+                do
                 {
-                    Processo processo = new Processo(GerarIdUnico(processosAtivos));
-
-                    if (processosAtivos.Count == 0)
-                    {
-                        processo.EhCoordenador = true;
-                    }
-
-                    processosAtivos.Add(processo);
+                    pid = new Random().Next(1000);
                 }
+                while (!processosAtivos.TryAdd(pid, null));
 
-                Esperar(ADICIONA);
+                Processo processo = new(pid);
+                processosAtivos[pid] = processo;
+
+                Console.WriteLine($"Processo {pid} criado");
+
+                Thread.Sleep(ADICIONA);
             }
         }).Start();
     }
 
-
-    private static int GerarIdUnico(List<Processo> processosAtivos)
-    {
-        Random random = new Random();
-        int idRandom = random.Next(1000);
-
-        foreach (Processo p in processosAtivos)
-        {
-            if (p.getPid() == idRandom)
-                return GerarIdUnico(processosAtivos);
-        }
-
-        return idRandom;
-    }
-
-    public static void InativarProcesso(List<Processo> processosAtivos)
+    public static void InativarCoordenador()
     {
         new Thread(() =>
         {
             while (true)
             {
-                Esperar(INATIVO_PROCESSO);
+                Thread.Sleep(INATIVO_COORDENADOR);
 
-                lock (_lock)
-                {
-                    if (processosAtivos.Count != 0)
-                    {
-                        int indexProcessoAleatorio = new Random().Next(processosAtivos.Count);
-                        Processo pRemover = processosAtivos[indexProcessoAleatorio];
-                        if (pRemover != null && !pRemover.isCoordenador())
-                        {
-                            pRemover.Destruir();
-                        }
-                    }
-                }
+                if (_coordenador == null)
+                    continue;
+
+                int pid = _coordenador?.Pid ?? 0;
+                _coordenador?.Dispose();
+                _coordenador = null;
+
+                Console.WriteLine($"Coordenador {pid} morreu");
             }
         }).Start();
     }
 
-    public static void InativarCoordenador(List<Processo> processosAtivos)
+    public static void AcessarRecurso()
     {
         new Thread(() =>
         {
             while (true)
             {
-                Esperar(INATIVO_COORDENADOR);
-
-                lock (_lock)
+                if (processosAtivos.IsEmpty)
                 {
-                    Processo coordenador = null;
-                    foreach (Processo p in processosAtivos)
-                    {
-                        if (p.IsCoordenador())
-                        {
-                            coordenador = p;
-                        }
-                    }
-                    if (coordenador != null)
-                    {
-                        coordenador.Destruir();
-                        Console.WriteLine("Processo coordenador " + coordenador + " destruido.");
-                    }
+                    Thread.Sleep(10);
+                    continue;
                 }
+
+                int intervalo = new Random().Next(CONSOME_RECURSO_MIN, CONSOME_RECURSO_MAX);
+                Thread.Sleep(intervalo);
+
+                ThreadPool.QueueUserWorkItem(async (_) =>
+                {
+                    int[] pids = processosAtivos.Keys.ToArray();
+                    if (pids.Length == 0)
+                        return;
+
+                    int indexProcessoAleatorio = new Random().Next(pids.Length);
+                    int pid = pids[indexProcessoAleatorio];
+
+                    if (!processosAtivos.TryRemove(pid, out Processo processo))
+                    {
+                        Console.WriteLine("Erro ao selecionar processo para acessar recurso");
+                        return;
+                    }
+
+                    await processo.AcessarRecursoCompartilhado();
+
+                    if (processo.EhCoordenador)
+                        _coordenador = processo;
+                    else
+                        processo?.Dispose();
+                });
             }
         }).Start();
-    }
-
-    public static void AcessarRecurso(List<Processo> processosAtivos)
-    {
-        new Thread(() =>
-        {
-            Random random = new Random();
-            int intervalo = 0;
-            while (true)
-            {
-                intervalo = random.Next(CONSOME_RECURSO_MIN, CONSOME_RECURSO_MAX);
-                Esperar(intervalo);
-
-                lock (_lock)
-                {
-                    if (processosAtivos.Count > 0)
-                    {
-                        int indexProcessoAleatorio = new Random().Next(processosAtivos.Count);
-
-                        Processo processoConsumidor = processosAtivos[indexProcessoAleatorio];
-                        processoConsumidor.AcessarRecursoCompartilhado();
-                    }
-                }
-            }
-        }).Start();
-    }
-
-
-    private static void Esperar(int segundos)
-    {
-        Thread.Sleep(segundos);
     }
 }
