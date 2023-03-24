@@ -20,7 +20,7 @@ public class Processo : IDisposable
         Pid = pid;
     }
 
-    public bool EhCoordenador => _coordenador != null;
+    public bool EhCoordenador => _coordenador?.Ativo == true;
     public int Pid { get; init; }
 
     private void PromoverACoordenador()
@@ -41,7 +41,7 @@ public class Processo : IDisposable
             {
                 using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 //sock.SendTimeout = 3000;
-                sock.ReceiveTimeout = 1000;
+                sock.ReceiveTimeout = 3000;
 
                 sock.Connect("localhost", PORTA);
                 await ConexaoHelper.SendMessageAsync(sock, mensagem.ToString());
@@ -146,6 +146,8 @@ public class Processo : IDisposable
         private readonly ConcurrentQueue<ComunicacaoProcesso> _filaEspera = new();
         private readonly Processo _processo;
 
+        private ComunicacaoProcesso _processoAcessandoRecurso;
+
         private bool _recursoEmUso = false;
         private bool _disposed;
 
@@ -154,6 +156,8 @@ public class Processo : IDisposable
             _processo = processo;
             Conectar(_cts.Token);
         }
+
+        public bool Ativo { get; private set; }
 
         private void Conectar(CancellationToken cancellationToken)
         {
@@ -167,6 +171,7 @@ public class Processo : IDisposable
                     listenSocket.Start();
 
                     ConsoleLog($"Pronto para receber requisicoes.");
+                    Ativo = true;
                     ProcessaFila(cancellationToken);
 
                     // fica conectado enquanto o coordenador estiver vivo
@@ -219,8 +224,12 @@ public class Processo : IDisposable
 
                                     case TipoMensagem.Liberacao:
                                     {
-                                        ConsoleLog($"Processo {mensagemEntrada.Pid} informou liberação de recurso");
-                                        _recursoEmUso = false;
+                                        if (_processoAcessandoRecurso?.Pid == mensagemEntrada.Pid)
+                                        {
+                                            ConsoleLog($"Processo {mensagemEntrada.Pid} informou liberação de recurso");
+                                            _processoAcessandoRecurso = null;
+                                            _recursoEmUso = false;
+                                        }
                                     }
                                     break;
                                 }
@@ -243,6 +252,7 @@ public class Processo : IDisposable
                 catch (SocketException) // já existe outro coordenador
                 {
                     Dispose();
+                    Ativo = false;
                 }
                 catch (Exception ex)
                 {
@@ -288,6 +298,8 @@ public class Processo : IDisposable
 
                         ConsoleLog($"Liberando acesso ao recurso para processo {item.Pid}");
 
+                        _processoAcessandoRecurso = item;
+
                         Mensagem mensagem = new(item.Pid, TipoMensagem.Concessao);
                         await ConexaoHelper.SendMessageAsync(item.Socket, mensagem.ToString());
                         item.Socket.Close();
@@ -320,6 +332,7 @@ public class Processo : IDisposable
             {
                 if (disposing)
                 {
+                    Ativo = false;
                     _cts.Cancel();
                     _cts.Dispose();
 

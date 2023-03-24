@@ -94,7 +94,7 @@ public static class Program
                         return;
                     }
 
-                    await processo.AcessarRecursoCompartilhado();
+                    processo.AcessarRecursoCompartilhado().Wait();
 
                     if (processo.EhCoordenador)
                         _coordenador = processo;
